@@ -107,7 +107,6 @@ cat >"$view_dir/index.html" <<EOF
       }
 
       body {
-        padding: 24px;
         font-family: system-ui, sans-serif;
       }
 
