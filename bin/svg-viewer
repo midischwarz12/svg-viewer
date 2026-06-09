@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+
+set -euo pipefail
+
+usage() {
+	cat >&2 <<'EOF'
+Usage: svg-viewer [--interval SECONDS] <path-to-svg>
+
+Open an SVG in your preferred browser and refresh it on a timer.
+EOF
+}
+
+html_escape() {
+	local value="$1"
+	value="${value//&/&amp;}"
+	value="${value//</&lt;}"
+	value="${value//>/&gt;}"
+	value="${value//\"/&quot;}"
+	value="${value//\'/&#39;}"
+	printf '%s' "$value"
+}
+
+interval="1"
+
+while (($# > 0)); do
+	case "$1" in
+	--interval)
+		if (($# < 2)); then
+			usage
+			exit 2
+		fi
+		interval="$2"
+		shift 2
+		;;
+	-h | --help)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		break
+		;;
+	-*)
+		printf 'svg-viewer: unknown option: %s\n' "$1" >&2
+		usage
+		exit 2
+		;;
+	*)
+		break
+		;;
+	esac
+done
+
+if (($# != 1)); then
+	usage
+	exit 2
+fi
+
+svg_path="$1"
+
+if [[ ! -f "$svg_path" ]]; then
+	printf 'svg-viewer: file not found: %s\n' "$svg_path" >&2
+	exit 1
+fi
+
+case "$svg_path" in
+*.svg | *.SVG) ;;
+*)
+	printf 'svg-viewer: expected an .svg file: %s\n' "$svg_path" >&2
+	exit 1
+	;;
+esac
+
+if ! [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$interval" == "0" || "$interval" == "0.0" ]]; then
+	printf 'svg-viewer: --interval must be a positive number of seconds\n' >&2
+	exit 2
+fi
+
+abs_svg="$(realpath "$svg_path")"
+svg_name="$(basename "$abs_svg")"
+escaped_svg_name="$(html_escape "$svg_name")"
+cache_root="${XDG_CACHE_HOME:-"$HOME/.cache"}/svg-viewer"
+view_dir="$cache_root/$(date +%Y%m%d-%H%M%S)-$$"
+mkdir -p "$view_dir"
+
+ln -s "$abs_svg" "$view_dir/source.svg"
+
+cat >"$view_dir/index.html" <<EOF
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>$escaped_svg_name - svg-viewer</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        background: Canvas;
+        color: CanvasText;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+
+      body {
+        padding: 24px;
+        font-family: system-ui, sans-serif;
+      }
+
+      img {
+        display: block;
+        width: auto;
+        height: auto;
+        max-width: none;
+        max-height: none;
+      }
+    </style>
+  </head>
+  <body>
+    <img id="svg" src="source.svg" alt="$escaped_svg_name">
+    <script>
+      const img = document.getElementById("svg");
+      const intervalMs = Math.max(100, Number("$interval") * 1000);
+
+      setInterval(() => {
+        img.src = "source.svg?reload=" + Date.now();
+      }, intervalMs);
+    </script>
+  </body>
+</html>
+EOF
+
+open_target="$view_dir/index.html"
+
+if command -v xdg-open >/dev/null 2>&1; then
+	xdg-open "$open_target" >/dev/null 2>&1 &
+elif command -v open >/dev/null 2>&1; then
+	open "$open_target" >/dev/null 2>&1 &
+elif [[ -n "${BROWSER:-}" ]]; then
+	"$BROWSER" "$open_target" >/dev/null 2>&1 &
+else
+	printf 'svg-viewer: could not find xdg-open, open, or %s\n' "\$BROWSER" >&2
+	printf 'svg-viewer: open this file manually: %s\n' "$open_target" >&2
+	exit 1
+fi
+
+printf 'Opened %s\n' "$open_target"
