@@ -22,7 +22,22 @@ html_escape() {
 }
 
 inline_svg() {
-	sed '/^[[:space:]]*<?xml[[:space:]]/d; /^[[:space:]]*<!DOCTYPE[[:space:]]/d' "$abs_svg"
+	awk '
+		/^[[:space:]]*<\?xml[[:space:]]/ { next }
+		/^[[:space:]]*<!DOCTYPE[[:space:]]/ {
+			if ($0 !~ />[[:space:]]*$/) {
+				in_doctype = 1
+			}
+			next
+		}
+		in_doctype {
+			if ($0 ~ />[[:space:]]*$/) {
+				in_doctype = 0
+			}
+			next
+		}
+		{ print }
+	' "$abs_svg"
 }
 
 render_index() {
