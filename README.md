@@ -11,7 +11,7 @@ opens the page with `xdg-open`, `open`, or `$BROWSER`, and renders the SVG inlin
 so browser find tooling can search text elements. It refreshes every second by
 default while preserving the SVG's explicit `width` and `height`. A small background
 updater rewrites the cached HTML from the source SVG so browser refreshes pick up
-file changes.
+file changes. Transparent SVG regions show on a black page canvas.
 
 Use a different refresh interval with:
 

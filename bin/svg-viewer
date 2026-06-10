@@ -58,6 +58,7 @@ render_index() {
       }
 
       body {
+        background: #000;
         font-family: system-ui, sans-serif;
       }
 
