@@ -1,55 +1,49 @@
-#!/usr/bin/env bash
-# SPDX-License-Identifier: AGPL-3.0-only
+#!/usr/bin/env node
+// SPDX-License-Identifier: AGPL-3.0-only
 
-set -euo pipefail
+const fs = require("node:fs");
+const http = require("node:http");
+const net = require("node:net");
+const os = require("node:os");
+const path = require("node:path");
+const { spawn } = require("node:child_process");
 
-usage() {
-	cat >&2 <<'EOF'
-Usage: svg-viewer [--interval SECONDS] <path-to-svg>
+function usage() {
+  console.error(`Usage: svg-viewer [--interval SECONDS] <path-to-svg>
 
-Open an SVG in your preferred browser and refresh it on a timer.
-EOF
+Open an SVG in your preferred browser and refresh it on a timer.`);
 }
 
-html_escape() {
-	local value="$1"
-	value="${value//&/&amp;}"
-	value="${value//</&lt;}"
-	value="${value//>/&gt;}"
-	value="${value//\"/&quot;}"
-	value="${value//\'/&#39;}"
-	printf '%s' "$value"
+function htmlEscape(value) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
-inline_svg() {
-	awk '
-		/^[[:space:]]*<\?xml[[:space:]]/ { next }
-		/^[[:space:]]*<!DOCTYPE[[:space:]]/ {
-			if ($0 !~ />[[:space:]]*$/) {
-				in_doctype = 1
-			}
-			next
-		}
-		in_doctype {
-			if ($0 ~ />[[:space:]]*$/) {
-				in_doctype = 0
-			}
-			next
-		}
-		{ print }
-	' "$abs_svg"
+function isPositiveNumber(value) {
+  return /^[0-9]+([.][0-9]+)?$/.test(value) && Number(value) > 0;
 }
 
-render_index() {
-	local tmp_html="$view_dir/index.html.tmp"
+function stripXmlPreamble(svg) {
+  return svg
+    .replace(/^\s*<\?xml\b[^>]*>\s*/i, "")
+    .replace(/^\s*<!DOCTYPE\b(?:[^>"']|"[^"]*"|'[^']*')*>\s*/i, "");
+}
 
-	cat >"$tmp_html" <<EOF
-<!doctype html>
+function readSvg(absSvg) {
+  return stripXmlPreamble(fs.readFileSync(absSvg, "utf8"));
+}
+
+function indexHtml({ title, intervalMs }) {
+  return `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>$escaped_svg_name - svg-viewer</title>
+    <title>${htmlEscape(title)} - svg-viewer</title>
     <style>
       html,
       body {
@@ -70,119 +64,250 @@ render_index() {
     </style>
   </head>
   <body>
-EOF
-
-	inline_svg >>"$tmp_html"
-
-	cat >>"$tmp_html" <<EOF
     <script>
-      const intervalMs = Math.max(100, Number("$interval") * 1000);
+      const intervalMs = ${JSON.stringify(intervalMs)};
+      let lastSvg = "";
 
-      setTimeout(() => {
-        location.reload();
-      }, intervalMs);
+      async function updateSvg() {
+        const response = await fetch("/svg?reload=" + Date.now(), { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error("SVG request failed: " + response.status);
+        }
+
+        const text = await response.text();
+        if (text === lastSvg) {
+          return;
+        }
+
+        const documentSvg = new DOMParser().parseFromString(text, "image/svg+xml");
+        const parserError = documentSvg.querySelector("parsererror");
+        if (parserError) {
+          throw new Error(parserError.textContent || "Unable to parse SVG");
+        }
+
+        const nextSvg = document.importNode(documentSvg.documentElement, true);
+        const currentSvg = document.body.querySelector(":scope > svg");
+        if (currentSvg) {
+          currentSvg.replaceWith(nextSvg);
+        } else {
+          document.body.prepend(nextSvg);
+        }
+        lastSvg = text;
+      }
+
+      updateSvg().catch(console.error);
+      setInterval(() => updateSvg().catch(console.error), intervalMs);
     </script>
   </body>
 </html>
-EOF
-	mv "$tmp_html" "$view_dir/index.html"
+`;
 }
 
-if [[ "${1:-}" == "--watch-html" ]]; then
-	if (($# != 5)); then
-		exit 2
-	fi
+function send(response, status, headers, body) {
+  response.writeHead(status, {
+    "Cache-Control": "no-store",
+    ...headers,
+  });
+  response.end(body);
+}
 
-	abs_svg="$2"
-	interval="$3"
-	view_dir="$4"
-	escaped_svg_name="$5"
+function startServer(config) {
+  const server = http.createServer((request, response) => {
+    const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
 
-	while true; do
-		sleep "$interval"
-		render_index
-	done
-fi
+    if (requestUrl.pathname === "/") {
+      send(
+        response,
+        200,
+        { "Content-Type": "text/html; charset=utf-8" },
+        indexHtml(config),
+      );
+      return;
+    }
 
-interval="1"
+    if (requestUrl.pathname === "/svg") {
+      try {
+        send(
+          response,
+          200,
+          { "Content-Type": "image/svg+xml; charset=utf-8" },
+          readSvg(config.absSvg),
+        );
+      } catch (error) {
+        send(
+          response,
+          500,
+          { "Content-Type": "text/plain; charset=utf-8" },
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return;
+    }
 
-while (($# > 0)); do
-	case "$1" in
-	--interval)
-		if (($# < 2)); then
-			usage
-			exit 2
-		fi
-		interval="$2"
-		shift 2
-		;;
-	-h | --help)
-		usage
-		exit 0
-		;;
-	--)
-		shift
-		break
-		;;
-	-*)
-		printf 'svg-viewer: unknown option: %s\n' "$1" >&2
-		usage
-		exit 2
-		;;
-	*)
-		break
-		;;
-	esac
-done
+    send(response, 404, { "Content-Type": "text/plain; charset=utf-8" }, "Not found");
+  });
 
-if (($# != 1)); then
-	usage
-	exit 2
-fi
+  server.listen(config.port, "127.0.0.1", () => {
+    fs.writeFileSync(config.readyFile, String(server.address().port));
+  });
+}
 
-svg_path="$1"
+function findOpenPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      server.close(() => resolve(address.port));
+    });
+  });
+}
 
-if [[ ! -f "$svg_path" ]]; then
-	printf 'svg-viewer: file not found: %s\n' "$svg_path" >&2
-	exit 1
-fi
+function openBrowser(url) {
+  const candidates = [];
 
-case "$svg_path" in
-*.svg | *.SVG) ;;
-*)
-	printf 'svg-viewer: expected an .svg file: %s\n' "$svg_path" >&2
-	exit 1
-	;;
-esac
+  if (process.env.BROWSER) {
+    candidates.push([process.env.BROWSER, [url]]);
+  }
 
-if ! [[ "$interval" =~ ^[0-9]+([.][0-9]+)?$ ]] || [[ "$interval" == "0" || "$interval" == "0.0" ]]; then
-	printf 'svg-viewer: --interval must be a positive number of seconds\n' >&2
-	exit 2
-fi
+  if (process.platform === "darwin") {
+    candidates.push(["open", [url]]);
+  } else {
+    candidates.push(["xdg-open", [url]]);
+  }
 
-abs_svg="$(realpath "$svg_path")"
-svg_name="$(basename "$abs_svg")"
-escaped_svg_name="$(html_escape "$svg_name")"
-cache_root="${XDG_CACHE_HOME:-"$HOME/.cache"}/svg-viewer"
-view_dir="$cache_root/$(date +%Y%m%d-%H%M%S)-$$"
-mkdir -p "$view_dir"
+  for (const [command, args] of candidates) {
+    if (!commandExists(command)) {
+      continue;
+    }
 
-render_index
+    try {
+      const child = spawn(command, args, {
+        detached: true,
+        stdio: "ignore",
+      });
+      child.unref();
+      return;
+    } catch {
+      // Try the next opener.
+    }
+  }
 
-nohup "$0" --watch-html "$abs_svg" "$interval" "$view_dir" "$escaped_svg_name" >/dev/null 2>&1 &
+  throw new Error("could not find xdg-open, open, or $BROWSER");
+}
 
-open_target="$view_dir/index.html"
+function commandExists(command) {
+  if (command.includes(path.sep)) {
+    return fs.existsSync(command);
+  }
 
-if command -v xdg-open >/dev/null 2>&1; then
-	xdg-open "$open_target" >/dev/null 2>&1 &
-elif command -v open >/dev/null 2>&1; then
-	open "$open_target" >/dev/null 2>&1 &
-elif [[ -n "${BROWSER:-}" ]]; then
-	"$BROWSER" "$open_target" >/dev/null 2>&1 &
-else
-	printf 'svg-viewer: could not find xdg-open, open, or %s\n' "\$BROWSER" >&2
-	printf 'svg-viewer: open this file manually: %s\n' "$open_target" >&2
-	exit 1
-fi
+  return (process.env.PATH || "")
+    .split(path.delimiter)
+    .some((dir) => fs.existsSync(path.join(dir, command)));
+}
 
-printf 'Opened %s\n' "$open_target"
+function parseArgs(args) {
+  let interval = "1";
+  const rest = [...args];
+
+  while (rest.length > 0) {
+    const arg = rest[0];
+    if (arg === "--interval") {
+      if (rest.length < 2) {
+        usage();
+        process.exit(2);
+      }
+      interval = rest[1];
+      rest.splice(0, 2);
+    } else if (arg === "-h" || arg === "--help") {
+      usage();
+      process.exit(0);
+    } else if (arg === "--") {
+      rest.shift();
+      break;
+    } else if (arg.startsWith("-")) {
+      console.error(`svg-viewer: unknown option: ${arg}`);
+      usage();
+      process.exit(2);
+    } else {
+      break;
+    }
+  }
+
+  if (rest.length !== 1) {
+    usage();
+    process.exit(2);
+  }
+
+  if (!isPositiveNumber(interval)) {
+    console.error("svg-viewer: --interval must be a positive number of seconds");
+    process.exit(2);
+  }
+
+  return {
+    intervalMs: Math.max(100, Number(interval) * 1000),
+    svgPath: rest[0],
+  };
+}
+
+async function waitForReadyFile(readyFile) {
+  const started = Date.now();
+  while (Date.now() - started < 5000) {
+    try {
+      return fs.readFileSync(readyFile, "utf8").trim();
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+  throw new Error("timed out waiting for svg-viewer server");
+}
+
+async function main() {
+  if (process.argv[2] === "--serve") {
+    startServer(JSON.parse(process.argv[3]));
+    return;
+  }
+
+  const { intervalMs, svgPath } = parseArgs(process.argv.slice(2));
+
+  if (!fs.existsSync(svgPath) || !fs.statSync(svgPath).isFile()) {
+    console.error(`svg-viewer: file not found: ${svgPath}`);
+    process.exit(1);
+  }
+
+  if (path.extname(svgPath).toLowerCase() !== ".svg") {
+    console.error(`svg-viewer: expected an .svg file: ${svgPath}`);
+    process.exit(1);
+  }
+
+  const absSvg = fs.realpathSync(svgPath);
+  const cacheRoot = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+  fs.mkdirSync(cacheRoot, { recursive: true });
+  const viewDir = fs.mkdtempSync(path.join(cacheRoot, "svg-viewer-"));
+  const readyFile = path.join(viewDir, "port");
+  const port = await findOpenPort();
+  const config = {
+    absSvg,
+    intervalMs,
+    port,
+    readyFile,
+    title: path.basename(absSvg),
+  };
+
+  const server = spawn(process.execPath, [process.argv[1], "--serve", JSON.stringify(config)], {
+    detached: true,
+    stdio: "ignore",
+  });
+  server.unref();
+
+  const actualPort = await waitForReadyFile(readyFile);
+  const url = `http://127.0.0.1:${actualPort}/`;
+
+  openBrowser(url);
+  console.log(`Opened ${url}`);
+}
+
+main().catch((error) => {
+  console.error(`svg-viewer: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+});

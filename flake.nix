@@ -26,6 +26,7 @@
           runtimePath = pkgs.lib.makeBinPath (
             [
               pkgs.coreutils
+              pkgs.nodejs
             ]
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
               pkgs.xdg-utils
@@ -77,8 +78,7 @@
         {
           default = pkgs.mkShell {
             packages = [
-              pkgs.shellcheck
-              pkgs.shfmt
+              pkgs.nodejs
               pkgs.jujutsu
             ];
           };
