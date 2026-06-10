@@ -7,10 +7,11 @@ svg-viewer path/to/file.svg
 ```
 
 The command creates a small `index.html` under `${XDG_CACHE_HOME:-$HOME/.cache}/svg-viewer`,
-symlinks the target SVG as `source.svg`, and opens the page with `xdg-open`, `open`,
-or `$BROWSER`. The page reloads the SVG every second by default while preserving the
-SVG's explicit `width` and `height`. The SVG is loaded as a document frame so browser
-find tooling can search text elements.
+opens the page with `xdg-open`, `open`, or `$BROWSER`, and renders the SVG inline
+so browser find tooling can search text elements. It refreshes every second by
+default while preserving the SVG's explicit `width` and `height`. A small background
+updater rewrites the cached HTML from the source SVG so browser refreshes pick up
+file changes.
 
 Use a different refresh interval with:
 

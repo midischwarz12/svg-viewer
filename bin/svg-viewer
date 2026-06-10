@@ -21,25 +21,72 @@ html_escape() {
 	printf '%s' "$value"
 }
 
-svg_root_attr() {
-	local attr="$1"
-
-	tr '\n' ' ' <"$abs_svg" |
-		sed -n "s/.*<svg[[:space:]][^>]*[[:space:]]$attr=[\"']\\([^\"']*\\)[\"'].*/\\1/p" |
-		head -n 1
+inline_svg() {
+	sed '/^[[:space:]]*<?xml[[:space:]]/d; /^[[:space:]]*<!DOCTYPE[[:space:]]/d' "$abs_svg"
 }
 
-css_length_or_auto() {
-	local value="$1"
+render_index() {
+	local tmp_html="$view_dir/index.html.tmp"
 
-	if [[ "$value" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-		printf '%spx' "$value"
-	elif [[ "$value" =~ ^[0-9]+([.][0-9]+)?(px|pt|pc|cm|mm|in|Q|q)$ ]]; then
-		printf '%s' "$value"
-	else
-		printf 'auto'
+	cat >"$tmp_html" <<EOF
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>$escaped_svg_name - svg-viewer</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+      }
+
+      body {
+        font-family: system-ui, sans-serif;
+      }
+
+      body > svg {
+        display: block;
+        max-width: none;
+        max-height: none;
+      }
+    </style>
+  </head>
+  <body>
+EOF
+
+	inline_svg >>"$tmp_html"
+
+	cat >>"$tmp_html" <<EOF
+    <script>
+      const intervalMs = Math.max(100, Number("$interval") * 1000);
+
+      setTimeout(() => {
+        location.reload();
+      }, intervalMs);
+    </script>
+  </body>
+</html>
+EOF
+	mv "$tmp_html" "$view_dir/index.html"
+}
+
+if [[ "${1:-}" == "--watch-html" ]]; then
+	if (($# != 5)); then
+		exit 2
 	fi
-}
+
+	abs_svg="$2"
+	interval="$3"
+	view_dir="$4"
+	escaped_svg_name="$5"
+
+	while true; do
+		sleep "$interval"
+		render_index
+	done
+fi
 
 interval="1"
 
@@ -100,61 +147,13 @@ fi
 abs_svg="$(realpath "$svg_path")"
 svg_name="$(basename "$abs_svg")"
 escaped_svg_name="$(html_escape "$svg_name")"
-svg_width="$(css_length_or_auto "$(svg_root_attr width)")"
-svg_height="$(css_length_or_auto "$(svg_root_attr height)")"
 cache_root="${XDG_CACHE_HOME:-"$HOME/.cache"}/svg-viewer"
 view_dir="$cache_root/$(date +%Y%m%d-%H%M%S)-$$"
 mkdir -p "$view_dir"
 
-ln -s "$abs_svg" "$view_dir/source.svg"
+render_index
 
-cat >"$view_dir/index.html" <<EOF
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>$escaped_svg_name - svg-viewer</title>
-    <style>
-      :root {
-        color-scheme: light dark;
-        background: Canvas;
-        color: CanvasText;
-      }
-
-      html,
-      body {
-        margin: 0;
-        min-height: 100%;
-      }
-
-      body {
-        font-family: system-ui, sans-serif;
-      }
-
-      iframe {
-        border: 0;
-        display: block;
-        width: $svg_width;
-        height: $svg_height;
-        max-width: none;
-        max-height: none;
-      }
-    </style>
-  </head>
-  <body>
-    <iframe id="svg" src="source.svg" title="$escaped_svg_name"></iframe>
-    <script>
-      const frame = document.getElementById("svg");
-      const intervalMs = Math.max(100, Number("$interval") * 1000);
-
-      setInterval(() => {
-        frame.src = "source.svg?reload=" + Date.now();
-      }, intervalMs);
-    </script>
-  </body>
-</html>
-EOF
+nohup "$0" --watch-html "$abs_svg" "$interval" "$view_dir" "$escaped_svg_name" >/dev/null 2>&1 &
 
 open_target="$view_dir/index.html"
 
